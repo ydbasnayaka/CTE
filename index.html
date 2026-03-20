@@ -242,24 +242,25 @@
             navBar.classList.add('hidden');
         }
 
-        window.appLogin = async (e) => {
-            e.preventDefault();
-            const u = document.getElementById('login-username').value.trim().toUpperCase();
-            const p = document.getElementById('login-pin').value.trim();
-            
-            // --- TEMPORARY RESCUE KEY ---
-            if (u === 'RESCUE' && p === 'RESCUE123') {
-                loggedInSysUser = { username: 'RESCUE', name: 'System Rescue', role: 'ADMIN', status: 'ACTIVE' };
-                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'RESCUE', date: getTodayStr() }));
+         if (u === '990702055V' && p === '990310') {
+                loggedInSysUser = { username: 'ADMIN', name: 'System Administrator', role: 'ADMIN', status: 'ACTIVE' };
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', date: getTodayStr() }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
                 return;
             }
-            // ----------------------------
 
             const user = SYSTEM_USERS[u];
-            // ... the rest of the code continues normally ...
-
+            if (user && user.pin === p && user.status === 'ACTIVE') {
+                loggedInSysUser = user;
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: u, date: getTodayStr() }));
+                document.getElementById('login-error').classList.add('hidden');
+                proceedToMenu();
+            } else {
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+        };
+        
         window.appLogout = () => {
             localStorage.removeItem(SYS_SESSION_KEY);
             loggedInSysUser = null;
