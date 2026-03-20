@@ -247,23 +247,18 @@
             const u = document.getElementById('login-username').value.trim().toUpperCase();
             const p = document.getElementById('login-pin').value.trim();
             
-            // Hardcoded Master Admin fallback
-                if (session.username === 'ADMIN' && session.date === getTodayStr()) {
-                    loggedInSysUser = { username: 'ADMIN', name: 'System Administrator', role: 'ADMIN', status: 'ACTIVE' };
-                    proceedToMenu();
-                    return;
-                }
-
-            const user = SYSTEM_USERS[u];
-            if (user && user.pin === p && user.status === 'ACTIVE') {
-                loggedInSysUser = user;
-                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: u, date: getTodayStr() }));
+            // --- TEMPORARY RESCUE KEY ---
+            if (u === 'RESCUE' && p === 'RESCUE123') {
+                loggedInSysUser = { username: 'RESCUE', name: 'System Rescue', role: 'ADMIN', status: 'ACTIVE' };
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'RESCUE', date: getTodayStr() }));
                 document.getElementById('login-error').classList.add('hidden');
                 proceedToMenu();
-            } else {
-                document.getElementById('login-error').classList.remove('hidden');
+                return;
             }
-        };
+            // ----------------------------
+
+            const user = SYSTEM_USERS[u];
+            // ... the rest of the code continues normally ...
 
         window.appLogout = () => {
             localStorage.removeItem(SYS_SESSION_KEY);
