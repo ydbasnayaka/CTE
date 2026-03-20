@@ -224,14 +224,8 @@
             const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
             if (sessionStr) {
                 const session = JSON.parse(sessionStr);
-                const sysUser = SYSTEM_USERS[session.username];
+                const sysUser = SYSTEM_USERS[session.username]
                 
-                if (session.username === 'ADMIN' && session.date === getTodayStr()) {
-                    loggedInSysUser = { username: 'ADMIN', name: 'System Administrator', role: 'ADMIN', status: 'ACTIVE' };
-                    proceedToMenu();
-                    return;
-                }
-
                 if (session.date === getTodayStr() && sysUser && sysUser.status === 'ACTIVE') {
                     loggedInSysUser = sysUser;
                     proceedToMenu();
