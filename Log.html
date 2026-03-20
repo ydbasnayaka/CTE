@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Terminal Access</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config
+        let appConfig = { apiKey: "MOCK_API_KEY", authDomain: "mock.firebaseapp.com", projectId: "mock-project" };
+        if (typeof __firebase_config !== 'undefined') { 
+            try { appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config; } catch (e) {}
+        }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'enterprise-dashboard-v1';
+
+        // State
+        let systemUsers = {};
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        let isEditing = false;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-teal-500 border-teal-600' : 'bg-red-500 border-red-600';
+            const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            try {
+                if (window.location.protocol === 'blob:') window.history.back();
+                else window.location.href = 'index.html';
+            } catch (e) { window.history.back(); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr) {
+                    const session = JSON.parse(sessionStr);
+                    loggedInSysUser = { username: session.username };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-users').classList.remove('hidden');
+                    loadData();
+                    switchUserTab('list');
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'system_users');
+            onSnapshot(usersRef, (snap) => {
+                systemUsers = {};
+                snap.forEach(doc => systemUsers[doc.id] = { id: doc.id, ...doc.data() });
+                window.renderSystemUsersList();
+            }, (err) => console.error("System users sync err:", err));
+        };
+
+        // ============================================================
+        //  USER MANAGEMENT LOGIC
+        // ============================================================
+        window.switchUserTab = (tab) => {
+            document.querySelectorAll('.user-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`user-tab-${tab}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.user-tab-btn').forEach(el => { 
+                el.classList.remove('bg-teal-600', 'text-white', 'shadow-md'); 
+                el.classList.add('bg-white', 'dark:bg-slate-800', 'text-slate-600', 'dark:text-slate-300', 'shadow-sm'); 
+            });
+            document.getElementById(`user-btn-${tab}`).classList.add('bg-teal-600', 'text-white', 'shadow-md');
+            document.getElementById(`user-btn-${tab}`).classList.remove('bg-white', 'dark:bg-slate-800', 'text-slate-600', 'dark:text-slate-300', 'shadow-sm');
+
+            if (tab === 'list') window.renderSystemUsersList();
+            if (tab === 'create' && !isEditing) resetUserForm(); 
+        };
+
+        function resetUserForm() {
+            document.getElementById('create-user-form').reset();
+            const idField = document.getElementById('new-sys-username');
+            idField.readOnly = false;
+            idField.classList.remove('bg-slate-100', 'dark:bg-slate-700', 'cursor-not-allowed');
+            isEditing = false;
+        }
+
+        window.renderSystemUsersList = () => {
+            const container = document.getElementById('system-users-list');
+            container.innerHTML = '';
+            
+            const users = Object.values(systemUsers);
+
+            if (users.length === 0) {
+                container.innerHTML = '<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 dark:text-slate-400 font-medium"><i class="fas fa-network-wired text-3xl mb-3 opacity-50 block"></i> No terminal accounts found.</td></tr>';
+                return;
+            }
+
+            users.sort((a,b) => (a.username || '').localeCompare(b.username || ''));
+
+            users.forEach(user => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 transition-colors';
+                
+                const statusBadge = user.status === 'ACTIVE' 
+                    ? '<span class="px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">ACTIVE</span>' 
+                    : '<span class="px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wider font-bold bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300">INACTIVE</span>';
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 text-sm font-bold text-slate-900 dark:text-white font-mono tracking-wide">
+                        <i class="fas fa-desktop text-teal-500 mr-2 opacity-70"></i>${user.username}
+                    </td>
+                    <td class="px-6 py-4 text-sm font-medium text-slate-700 dark:text-slate-300">${user.name}</td>
+                    <td class="px-6 py-4 text-sm"><span class="px-2.5 py-1 bg-slate-100 dark:bg-slate-700 rounded-md text-[10px] uppercase tracking-wider font-bold text-slate-600 dark:text-slate-400">${user.role}</span></td>
+                    <td class="px-6 py-4 text-sm">${statusBadge}</td>
+                    <td class="px-6 py-4 text-sm text-right">
+                        <div class="flex justify-end space-x-2">
+                            <button onclick="editSystemUser('${user.username}')" class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fas fa-edit"></i></button>
+                            <button onclick="deleteSystemUser('${user.username}')" class="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </td>
+                `;
+                container.appendChild(tr);
+            });
+        };
+
+        window.createSystemUser = async () => {
+            const username = document.getElementById('new-sys-username').value.trim().toUpperCase();
+            if (!username) return showToast('Terminal ID required', 'error');
+            
+            const userData = {
+                username: username,
+                name: document.getElementById('new-sys-name').value.trim(),
+                role: document.getElementById('new-sys-role').value,
+                pin: document.getElementById('new-sys-pin').value.trim(),
+                status: document.getElementById('new-sys-status').value,
+                updatedAt: serverTimestamp()
+            };
+
+            // Require pin on creation, but optional on edit if keeping existing
+            if (!isEditing && !userData.pin) {
+                return showToast('Secret Key is required for new accounts', 'error');
+            }
+
+            try {
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', username), userData, { merge: true });
+                window.showToast(isEditing ? 'Terminal Account Updated' : 'Terminal Account Created', 'success');
+                resetUserForm();
+                switchUserTab('list');
+            } catch (err) {
+                console.error(err);
+                window.showToast('Failed to save record.', 'error');
+            }
+        };
+
+        window.editSystemUser = (username) => {
+            const user = systemUsers[username];
+            if (!user) return;
+
+            document.getElementById('new-sys-username').value = user.username;
+            document.getElementById('new-sys-name').value = user.name || '';
+            document.getElementById('new-sys-role').value = user.role || 'SECURITY';
+            document.getElementById('new-sys-pin').value = user.pin || '';
+            document.getElementById('new-sys-status').value = user.status || 'ACTIVE';
+            
+            const idField = document.getElementById('new-sys-username');
+            idField.readOnly = true;
+            idField.classList.add('bg-slate-100', 'dark:bg-slate-700', 'cursor-not-allowed');
+
+            isEditing = true;
+            switchUserTab('create');
+        };
+
+        window.deleteSystemUser = async (username) => {
+            if (username === 'ADMIN') {
+                return window.showToast('Cannot delete root ADMIN account', 'error');
+            }
+            if(confirm(`Revoke access for Terminal ID ${username}?`)) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', username));
+                window.showToast('Access Revoked', 'success');
+            }
+        };
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-teal-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(13,148,136,0.4)]">
+                    <i class="fas fa-network-wired text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Terminal<span class="text-teal-400">Access</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-teal-400 tracking-wider">
+                    <i class="fas fa-shield-alt mr-1 align-middle"></i> ADMIN ACCESS
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-teal-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-teal-600 shadow-[0_0_30px_rgba(13,148,136,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Syncing Nodes...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN USERS VIEW -->
+        <div id="view-users" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
+            <div class="mb-8">
+                <h2 class="text-3xl font-extrabold text-slate-800 dark:text-white tracking-tight flex items-center gap-3">
+                    Node Authorization Management
+                </h2>
+                <p class="text-slate-500 dark:text-slate-400 mt-2 font-medium">Provision and audit system dashboard nodes and security credentials across the enterprise.</p>
+            </div>
+
+            <div class="flex space-x-3 mb-6">
+                <button id="user-btn-list" onclick="switchUserTab('list')" class="user-tab-btn px-6 py-3 bg-teal-600 text-white border-none rounded-xl shadow-md text-sm font-bold transition-all">Active Terminals</button>
+                <button id="user-btn-create" onclick="switchUserTab('create')" class="user-tab-btn px-6 py-3 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm text-sm font-bold transition-all hover:bg-slate-50 dark:hover:bg-slate-700">Provision New Node</button>
+            </div>
+            
+            <!-- List Tab -->
+            <div id="user-tab-list" class="user-tab-content bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 flex-grow flex flex-col overflow-hidden">
+                <div class="overflow-x-auto flex-grow">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700/50">
+                        <thead class="bg-slate-50 dark:bg-slate-900/50 sticky top-0 shadow-sm">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Terminal ID</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Node Name</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">System Role</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Status</th>
+                                <th class="px-6 py-4 text-right text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="system-users-list" class="bg-white dark:bg-slate-800 divide-y divide-slate-100 dark:divide-slate-700/50"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Create/Edit Tab -->
+            <div id="user-tab-create" class="user-tab-content hidden bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8">
+                <form id="create-user-form" class="grid grid-cols-1 md:grid-cols-2 gap-8" onsubmit="event.preventDefault(); createSystemUser();">
+                    <div class="md:col-span-2 text-xl font-extrabold text-slate-800 dark:text-white pb-3 border-b border-slate-100 dark:border-slate-700/50 flex items-center"><i class="fas fa-network-wired text-teal-600 mr-3"></i> Node Configuration Profile</div>
+                    
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Terminal ID (Login Username)</label><input type="text" id="new-sys-username" class="w-full border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 uppercase font-mono bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-sm" required placeholder="E.G. SEC-01"></div>
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Display Name</label><input type="text" id="new-sys-name" class="w-full border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-sm" required placeholder="E.G. Main Gate Security"></div>
+                    
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Access Role Level</label>
+                        <select id="new-sys-role" class="w-full border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-sm font-bold" required>
+                            <option value="ADMIN">System Administrator (Global)</option>
+                            <option value="SECURITY">Security Post (Check-in / Attendance)</option>
+                            <option value="CANTEEN">Canteen Terminal (Redemption Only)</option>
+                            <option value="REPORT_VIEWER">Analytics Viewer (Read Only)</option>
+                        </select>
+                    </div>
+                    
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Secret Key (Access Auth)</label><input type="password" id="new-sys-pin" class="w-full border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-sm font-mono tracking-widest" placeholder="••••••••"></div>
+                    
+                    <div class="md:col-span-2">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Network Status</label>
+                        <select id="new-sys-status" class="w-full md:w-1/2 border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-sm font-bold">
+                            <option value="ACTIVE">ACTIVE - Online / Provisioned</option>
+                            <option value="INACTIVE">INACTIVE - Suspended / Offline</option>
+                        </select>
+                    </div>
+                    
+                    <div class="md:col-span-2 text-right border-t border-slate-100 dark:border-slate-700/50 pt-6 mt-4">
+                        <button type="submit" class="bg-teal-600 hover:bg-teal-700 text-white px-8 py-4 rounded-xl shadow-lg shadow-teal-500/30 font-bold transition transform active:scale-95 text-sm uppercase tracking-wider">Deploy Node Configuration</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+</body>
+</html>

@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Canteen Terminal</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- QR Code Libs -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        
+        /* QR Scanner Custom Overrides */
+        #qr-reader { border: none !important; border-radius: 1.5rem; overflow: hidden; }
+        #qr-reader__scan_region { background: #0f172a; }
+        #qr-reader__dashboard { padding: 1rem !important; background: #1e293b; color: white !important; }
+        #qr-reader button { background: #2563eb !important; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; cursor: pointer; font-weight: bold; margin: 4px; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config (Matches Dashboard)
+        let appConfig = { apiKey: "MOCK_API_KEY", authDomain: "mock.firebaseapp.com", projectId: "mock-project" };
+        if (typeof __firebase_config !== 'undefined') { 
+            try { appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config; } catch (e) {}
+        }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'enterprise-dashboard-v1';
+
+        // State
+        let personnelMap = {};
+        let attendanceLogs = [];
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        let isScanning = false;
+        let qrScanner = null;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-emerald-500 border-emerald-600' : 'bg-red-500 border-red-600';
+            const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            try {
+                if (window.location.protocol === 'blob:') window.history.back();
+                else window.location.href = 'index.html';
+            } catch (e) { window.history.back(); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr) {
+                    const session = JSON.parse(sessionStr);
+                    loggedInSysUser = { username: session.username };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-canteen').classList.remove('hidden');
+                    loadData();
+                    initScanner();
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            // Load Personnel (for mapping ID to Name)
+            const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'personnel');
+            onSnapshot(pRef, (snap) => {
+                personnelMap = {};
+                snap.forEach(doc => personnelMap[doc.id] = doc.data());
+                updateStatsUI();
+            });
+
+            // Listen to Attendance Logs for Today
+            const aRef = collection(db, 'artifacts', appId, 'public', 'data', 'attendance_logs');
+            onSnapshot(aRef, (snap) => {
+                const today = getTodayStr();
+                attendanceLogs = [];
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    if (data.date === today) attendanceLogs.push({ id: doc.id, ...data });
+                });
+                
+                // Sort by redemption time descending, if redeemed
+                attendanceLogs.sort((a, b) => {
+                    const tA = a.redeemedAt?.toMillis ? a.redeemedAt.toMillis() : 0;
+                    const tB = b.redeemedAt?.toMillis ? b.redeemedAt.toMillis() : 0;
+                    return tB - tA; 
+                });
+                
+                updateStatsUI();
+                renderRecentScans();
+            });
+        };
+
+        // UI Updates
+        function updateStatsUI() {
+            const totalCleared = attendanceLogs.length;
+            const redeemedCount = attendanceLogs.filter(log => log.mealRedeemed === true).length;
+            const remaining = totalCleared - redeemedCount;
+
+            document.getElementById('stat-redeemed').innerText = redeemedCount;
+            document.getElementById('stat-remaining').innerText = remaining;
+            
+            const pBar = document.getElementById('canteen-progress');
+            const pText = document.getElementById('canteen-progress-text');
+            const percent = totalCleared === 0 ? 0 : Math.round((redeemedCount / totalCleared) * 100);
+            
+            pBar.style.width = `${percent}%`;
+            pText.innerText = `${percent}% Capacity`;
+        }
+
+        function renderRecentScans() {
+            const listEl = document.getElementById('recent-scans');
+            const redeemedLogs = attendanceLogs.filter(log => log.mealRedeemed === true).slice(0, 5); // Last 5
+            
+            if (redeemedLogs.length === 0) {
+                listEl.innerHTML = `<div class="text-center py-8 text-slate-500"><i class="fas fa-history mb-2 opacity-50 text-2xl"></i><p class="text-xs font-bold uppercase tracking-wider">No Redemptions Yet</p></div>`;
+                return;
+            }
+
+            let html = '';
+            redeemedLogs.forEach(log => {
+                const empName = personnelMap[log.empId]?.name || 'Unknown Employee';
+                html += `
+                    <div class="flex justify-between items-center p-3 rounded-xl bg-slate-100 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 animate-fade-in mb-2">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-sm"><i class="fas fa-utensils"></i></div>
+                            <div>
+                                <h4 class="font-bold text-sm text-slate-800 dark:text-white leading-none">${empName}</h4>
+                                <span class="text-[10px] text-slate-500 font-mono">${log.empId}</span>
+                            </div>
+                        </div>
+                        <span class="text-xs font-bold text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded">Redeemed</span>
+                    </div>
+                `;
+            });
+            listEl.innerHTML = html;
+        }
+
+        // --- SCANNING & REDEMPTION LOGIC ---
+        
+        function initScanner() {
+            qrScanner = new Html5Qrcode("qr-reader");
+            const config = { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 };
+            
+            // Start scanning immediately
+            qrScanner.start({ facingMode: "environment" }, config, onScanSuccess)
+                .catch(err => {
+                    console.warn("Camera init failed, using manual fallback mode.", err);
+                    document.getElementById("qr-reader").innerHTML = `<div class="p-10 text-center"><i class="fas fa-camera-slash text-4xl text-slate-500 mb-4"></i><p class="text-sm font-bold text-slate-400">Camera Unavailable</p><p class="text-xs mt-2 text-slate-500">Please use manual entry below.</p></div>`;
+                });
+        }
+
+        window.manualSubmit = (e) => {
+            if (e) e.preventDefault();
+            const id = document.getElementById('manual-id').value.trim().toUpperCase();
+            if (id) {
+                processRedemption(id);
+                document.getElementById('manual-id').value = '';
+            }
+        };
+
+        const onScanSuccess = (decodedText) => {
+            if (isScanning) return; // Prevent double scans
+            
+            // Assume the QR payload is the Employee ID (e.g., "EMP-001")
+            const empId = decodedText.trim().toUpperCase();
+            processRedemption(empId);
+        };
+
+        async function processRedemption(empId) {
+            isScanning = true;
+            const today = getTodayStr();
+            const docId = `${today}_${empId}`;
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'attendance_logs', docId);
+
+            try {
+                const snapshot = await getDoc(ref);
+                
+                if (!snapshot.exists()) {
+                    playBeep('error');
+                    window.showToast(`ACCESS DENIED: ${empId} is NOT marked present today.`, 'error');
+                } else {
+                    const data = snapshot.data();
+                    
+                    if (data.mealRedeemed === true) {
+                        playBeep('error');
+                        window.showToast(`DENIED: Meal already redeemed for ${empId} today.`, 'error');
+                    } else {
+                        // Success path
+                        await updateDoc(ref, {
+                            mealRedeemed: true,
+                            redeemedAt: serverTimestamp(),
+                            redeemedBy: loggedInSysUser.username
+                        });
+                        
+                        const name = personnelMap[empId]?.name || empId;
+                        playBeep('success');
+                        window.showToast(`SUCCESS: Meal redeemed for ${name}.`, 'success');
+                    }
+                }
+            } catch (err) {
+                console.error("Redemption error:", err);
+                window.showToast("System error processing redemption.", "error");
+            } finally {
+                // Cooldown to prevent spam scanning the same code
+                setTimeout(() => { isScanning = false; }, 2500);
+            }
+        }
+
+        // Quick Audio Feedback using AudioContext to avoid needing external MP3s
+        function playBeep(type) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                
+                if (type === 'success') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(800, ctx.currentTime);
+                    osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.1);
+                    gain.gain.setValueAtTime(1, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+                    osc.start(); osc.stop(ctx.currentTime + 0.3);
+                } else {
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(200, ctx.currentTime);
+                    gain.gain.setValueAtTime(0.5, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+                    osc.start(); osc.stop(ctx.currentTime + 0.4);
+                }
+            } catch (e) { console.log("Audio not supported"); }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-emerald-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.4)]">
+                    <i class="fas fa-utensils text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Canteen<span class="text-emerald-500">Counter</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-emerald-400 tracking-wider">
+                    <i class="fas fa-wifi mr-1 align-middle"></i> ONLINE
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-emerald-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-emerald-600 shadow-[0_0_30px_rgba(16,185,129,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Authorizing Module...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN CANTEEN VIEW -->
+        <div id="view-canteen" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
+            <div class="mb-8">
+                <h2 class="text-3xl font-extrabold text-slate-800 dark:text-white tracking-tight flex items-center gap-3">
+                    Redemption Node
+                </h2>
+                <p class="text-slate-500 dark:text-slate-400 mt-2 font-medium">Scan employee ID badges to authorize and fulfill daily meal allocations.</p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-grow">
+                
+                <!-- Left: Scanner Area -->
+                <div class="lg:col-span-2 flex flex-col gap-6">
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-xl relative overflow-hidden flex-grow flex flex-col">
+                        <!-- Decorative corners -->
+                        <div class="absolute top-0 left-0 w-16 h-16 border-t-4 border-l-4 border-emerald-500 rounded-tl-3xl m-6 pointer-events-none z-10"></div>
+                        <div class="absolute top-0 right-0 w-16 h-16 border-t-4 border-r-4 border-emerald-500 rounded-tr-3xl m-6 pointer-events-none z-10"></div>
+                        <div class="absolute bottom-0 left-0 w-16 h-16 border-b-4 border-l-4 border-emerald-500 rounded-bl-3xl m-6 pointer-events-none z-10"></div>
+                        <div class="absolute bottom-0 right-0 w-16 h-16 border-b-4 border-r-4 border-emerald-500 rounded-br-3xl m-6 pointer-events-none z-10"></div>
+                        
+                        <div class="text-center mb-4">
+                            <span class="bg-emerald-500/10 text-emerald-500 text-xs font-bold uppercase tracking-[0.2em] px-4 py-1.5 rounded-full border border-emerald-500/20"><i class="fas fa-camera mr-2"></i> Optical Scanner Active</span>
+                        </div>
+                        
+                        <!-- QR Target Box -->
+                        <div class="w-full max-w-md mx-auto aspect-square bg-slate-900 rounded-[1.5rem] relative overflow-hidden shadow-inner flex items-center justify-center">
+                            <div id="qr-reader" class="w-full h-full"></div>
+                        </div>
+
+                        <!-- Manual Entry Fallback -->
+                        <div class="mt-8 w-full max-w-md mx-auto">
+                            <div class="flex items-center justify-center gap-4 mb-3">
+                                <div class="h-px bg-slate-200 dark:bg-slate-700 flex-grow"></div>
+                                <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Or Enter ID Manually</span>
+                                <div class="h-px bg-slate-200 dark:bg-slate-700 flex-grow"></div>
+                            </div>
+                            <form onsubmit="manualSubmit(event)" class="flex gap-2">
+                                <input type="text" id="manual-id" placeholder="e.g. EMP-001" class="flex-grow bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono uppercase text-slate-800 dark:text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                                <button type="submit" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 py-3 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform active:scale-95 text-sm uppercase tracking-wider">Submit</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Stats & Logs -->
+                <div class="flex flex-col gap-6">
+                    <!-- Stat Card 1 -->
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-emerald-200 dark:border-emerald-900/40 shadow-sm relative overflow-hidden">
+                        <div class="absolute -right-4 -top-4 w-24 h-24 bg-emerald-500/10 rounded-full pointer-events-none"></div>
+                        <span class="text-emerald-600 dark:text-emerald-400 text-xs font-bold uppercase tracking-[0.15em] mb-1 block">Meals Redeemed Today</span>
+                        <div class="flex items-end gap-3 mt-2">
+                            <span id="stat-redeemed" class="text-5xl font-black text-slate-800 dark:text-white leading-none">0</span>
+                            <span class="text-slate-400 text-sm font-medium mb-1">meals</span>
+                        </div>
+                        
+                        <div class="mt-6">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-slate-400 text-[10px] font-bold uppercase tracking-[0.1em]">Daily Capacity</span>
+                                <span id="canteen-progress-text" class="text-xs font-black text-slate-800 dark:text-white">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-2 overflow-hidden border border-slate-200 dark:border-slate-600">
+                                <div id="canteen-progress" class="bg-emerald-500 h-full rounded-full transition-all duration-1000 ease-out" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stat Card 2 -->
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm">
+                        <span class="text-slate-400 text-xs font-bold uppercase tracking-[0.15em] mb-1 block">Eligible Meals Pending</span>
+                        <div class="flex items-end gap-3 mt-2">
+                            <span id="stat-remaining" class="text-4xl font-black text-slate-800 dark:text-white leading-none">0</span>
+                            <span class="text-slate-400 text-sm font-medium mb-1">waiting</span>
+                        </div>
+                    </div>
+
+                    <!-- Recent Logs -->
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex-grow flex flex-col">
+                        <h3 class="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider mb-4 border-b border-slate-200 dark:border-slate-700 pb-3"><i class="fas fa-history text-emerald-500 mr-2"></i> Recent Activity</h3>
+                        <div id="recent-scans" class="flex-grow space-y-1">
+                            <!-- Populated via JS -->
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+</body>
+</html>

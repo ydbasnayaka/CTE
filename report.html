@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Analytics Engine</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* --- PROFESSIONAL PRINT ENGINE --- */
+        @media print {
+            body > * { display: none !important; }
+            #print-overlay {
+                display: block !important;
+                position: fixed;
+                top: 0; left: 0; width: 100%; height: 100%;
+                background: white; z-index: 9999; padding: 0; margin: 0;
+            }
+            .print-mode-report { display: block !important; padding: 10mm; }
+            .report-table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+            .report-table th, .report-table td { border: 1px solid #ddd; padding: 6px; text-align: left; }
+            .report-table th { background-color: #f3f4f6 !important; font-weight: bold; }
+            @page { size: auto; margin: 5mm; }
+        }
+        #print-overlay { display: none; }
+
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config
+        let appConfig = { apiKey: "MOCK_API_KEY", authDomain: "mock.firebaseapp.com", projectId: "mock-project" };
+        if (typeof __firebase_config !== 'undefined') { 
+            try { appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config; } catch (e) {}
+        }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'enterprise-dashboard-v1';
+
+        // State
+        let personnelMap = {};
+        let attendanceLogs = [];
+        let mealTokenValue = 5.00;
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+
+        document.documentElement.classList.add('dark');
+
+        const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+        function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-purple-500 border-purple-600' : 'bg-red-500 border-red-600';
+            const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            try {
+                if (window.location.protocol === 'blob:') window.history.back();
+                else window.location.href = 'index.html';
+            } catch (e) { window.history.back(); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr) {
+                    const session = JSON.parse(sessionStr);
+                    loggedInSysUser = { username: session.username };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-report').classList.remove('hidden');
+                    
+                    document.getElementById('rpt-start').value = getTodayStr();
+                    document.getElementById('rpt-end').value = getTodayStr();
+                    
+                    loadData();
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            // 1. Get Token Value
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
+            onSnapshot(settingsRef, (docSnap) => {
+                if (docSnap.exists() && docSnap.data().mealTokenValue !== undefined) {
+                    mealTokenValue = parseFloat(docSnap.data().mealTokenValue);
+                }
+                updateAnalytics();
+            });
+
+            // 2. Listen to Personnel DB
+            const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'personnel');
+            onSnapshot(pRef, (snap) => {
+                personnelMap = {};
+                snap.forEach(doc => personnelMap[doc.id] = doc.data());
+                updateAnalytics();
+            });
+
+            // 3. Listen to Attendance Logs
+            const aRef = collection(db, 'artifacts', appId, 'public', 'data', 'attendance_logs');
+            onSnapshot(aRef, (snap) => {
+                attendanceLogs = [];
+                snap.forEach(doc => attendanceLogs.push({ id: doc.id, ...doc.data() }));
+                updateAnalytics();
+            });
+        };
+
+        // ============================================================
+        //  ANALYTICS ENGINE
+        // ============================================================
+        function updateAnalytics() {
+            const todayStr = getTodayStr();
+            const currentMonthStr = todayStr.substring(0, 7); 
+
+            let totalCostToday = 0, issuedToday = 0, consumedToday = 0;
+            let totalCostMonth = 0, issuedMonth = 0, consumedMonth = 0;
+
+            const dailyStats = {};
+            const deptStats = {};
+            const acctStats = {};
+            const compStats = {};
+            const siteStats = {};
+
+            // Initialize last 7 days
+            for (let i=6; i>=0; i--) {
+                const d = new Date(); d.setDate(d.getDate() - i);
+                dailyStats[d.toISOString().split('T')[0]] = 0;
+            }
+
+            const tbody = document.getElementById('report-table-body');
+            if(tbody) tbody.innerHTML = '';
+
+            // Sort logs by newest first for the live feed
+            const sortedLogs = [...attendanceLogs].sort((a, b) => {
+                const tA = a.markedAt?.toMillis ? a.markedAt.toMillis() : 0;
+                const tB = b.markedAt?.toMillis ? b.markedAt.toMillis() : 0;
+                return tB - tA;
+            });
+
+            let tableCount = 0;
+
+            sortedLogs.forEach(log => {
+                const emp = personnelMap[log.empId] || {};
+                const isConsumed = log.mealRedeemed === true;
+                const cost = isConsumed ? mealTokenValue : 0;
+                
+                // Monthly Stats
+                if (log.date && log.date.startsWith(currentMonthStr)) {
+                    issuedMonth++;
+                    if (isConsumed) {
+                        totalCostMonth += cost;
+                        consumedMonth++;
+                    }
+                }
+
+                // Daily Stats & Feed
+                if(log.date === todayStr) {
+                    issuedToday++;
+                    if (isConsumed) {
+                        totalCostToday += cost;
+                        consumedToday++;
+                    }
+                    
+                    // Populate Live Feed (Max 100 items)
+                    if(tbody && tableCount < 100) {
+                        const tr = document.createElement('tr');
+                        tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700/50 last:border-0 transition-colors animate-fade-in';
+                        
+                        const timeStr = log.markedAt?.toDate ? log.markedAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Pending';
+                        const statusBadge = isConsumed 
+                            ? `<span class="px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wide font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">REDEEMED</span>`
+                            : `<span class="px-2.5 py-1 rounded-full text-[10px] uppercase tracking-wide font-bold bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">CLEARED</span>`;
+
+                        tr.innerHTML = `
+                            <td class="px-6 py-4 text-sm font-bold text-slate-800 dark:text-white flex flex-col">
+                                <span>${emp.name || 'Unknown'}</span>
+                                <span class="text-[10px] font-mono text-slate-400 mt-1">${log.empId}</span>
+                            </td>
+                            <td class="px-6 py-4 text-xs font-bold text-slate-600 dark:text-slate-400">${timeStr}</td>
+                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">${emp.department || emp.dept || '-'}</td>
+                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">${emp.site || '-'}</td>
+                            <td class="px-6 py-4 text-sm">${statusBadge}</td>
+                            <td class="px-6 py-4 text-sm font-bold text-slate-800 dark:text-white text-right">${isConsumed ? formatter.format(cost) : '-'}</td>
+                        `;
+                        tbody.appendChild(tr);
+                        tableCount++;
+                    }
+                }
+
+                // Distributions (Only count consumed meals for cost distributions)
+                if (isConsumed) {
+                    if (dailyStats.hasOwnProperty(log.date)) dailyStats[log.date] += cost;
+
+                    const dept = emp.department || emp.dept || 'Unknown';
+                    const acct = emp.accountName || 'CTE';
+                    const comp = emp.companyName || 'Internal';
+                    const site = emp.site || 'Unknown';
+
+                    deptStats[dept] = (deptStats[dept] || 0) + cost;
+                    acctStats[acct] = (acctStats[acct] || 0) + cost;
+                    compStats[comp] = (compStats[comp] || 0) + cost;
+                    siteStats[site] = (siteStats[site] || 0) + cost;
+                }
+            });
+
+            // Update DOM
+            document.getElementById('rpt-total-spend').textContent = formatter.format(totalCostToday);
+            document.getElementById('rpt-tokens-issued-today').textContent = issuedToday;
+            document.getElementById('rpt-tokens-consumed-today').textContent = consumedToday;
+            
+            document.getElementById('rpt-month-spend').textContent = formatter.format(totalCostMonth);
+            document.getElementById('rpt-month-issued').textContent = issuedMonth;
+            document.getElementById('rpt-month-consumed').textContent = consumedMonth;
+
+            renderDistributionChart('rpt-chart-dept', deptStats, true);
+            renderDistributionChart('rpt-chart-acct', acctStats, true);
+            renderDistributionChart('rpt-chart-comp', compStats, true);
+            renderDistributionChart('rpt-chart-site', siteStats, true);
+
+            // 7-Day Trend
+            const trendContainer = document.getElementById('rpt-chart-trend');
+            trendContainer.innerHTML = '';
+            const maxDaily = Math.max(...Object.values(dailyStats), 10);
+            Object.keys(dailyStats).forEach(date => {
+                const val = dailyStats[date];
+                const hPercent = (val / maxDaily) * 100;
+                trendContainer.innerHTML += `
+                    <div class="flex flex-col items-center flex-1">
+                        <div class="w-full bg-slate-100 dark:bg-slate-700 rounded-t-lg relative group h-32 flex items-end justify-center">
+                            <div class="w-3/4 bg-purple-500 rounded-t-md transition-all duration-700 hover:bg-purple-400 shadow-md" style="height: ${Math.max(hPercent, 2)}%"></div>
+                            <div class="absolute -top-10 bg-slate-800 text-white text-xs px-2.5 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 shadow-lg pointer-events-none">${formatter.format(val)}</div>
+                        </div>
+                        <div class="text-[10px] text-slate-400 dark:text-slate-500 mt-2 font-bold uppercase tracking-wider">${new Date(date).toLocaleDateString('en-US', {weekday: 'short'})}</div>
+                    </div>
+                `;
+            });
+        }
+
+        function renderDistributionChart(containerId, stats, showAmount = false) {
+            const container = document.getElementById(containerId);
+            if (!container) return; 
+            container.innerHTML = '';
+            
+            const total = Object.values(stats).reduce((a,b)=>a+b, 0) || 1;
+            const sortedKeys = Object.keys(stats).sort((a,b) => stats[b] - stats[a]).slice(0, 5); // Top 5
+
+            if (sortedKeys.length === 0) {
+                container.innerHTML = '<div class="text-xs text-slate-500 italic py-4">No financial data available.</div>';
+                return;
+            }
+
+            sortedKeys.forEach(key => {
+                const val = stats[key];
+                const percent = (val / total) * 100;
+                const label = showAmount ? `${key} (${formatter.format(val)})` : key;
+                
+                container.innerHTML += `
+                    <div class="mb-4">
+                        <div class="flex justify-between text-xs mb-1.5">
+                            <span class="font-bold text-slate-700 dark:text-slate-300 truncate w-2/3" title="${key}">${label}</span>
+                            <span class="text-slate-500 dark:text-slate-400 font-medium">${Math.round(percent)}%</span>
+                        </div>
+                        <div class="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-2">
+                            <div class="bg-purple-500 h-2 rounded-full" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        // ============================================================
+        //  REPORTS & EXPORTS
+        // ============================================================
+        window.printReport = () => {
+            const content = document.getElementById('report-preview-content').innerHTML;
+            const overlay = document.getElementById('print-overlay');
+            overlay.innerHTML = content;
+            overlay.className = 'print-mode-report'; 
+            window.print();
+        };
+
+        window.generateReportPreview = () => {
+            const startDate = document.getElementById('rpt-start').value;
+            const endDate = document.getElementById('rpt-end').value;
+            const filterType = document.getElementById('rpt-filter-type').value;
+
+            if(!startDate || !endDate) return window.showToast('Select date range', 'error');
+
+            const modal = document.getElementById('report-preview-modal');
+            const content = document.getElementById('report-preview-content');
+            modal.classList.remove('hidden');
+            
+            let rows = "";
+            let count = 0;
+            let totalCost = 0;
+
+            // Filter and sort logs
+            const filteredLogs = attendanceLogs.filter(log => log.date >= startDate && log.date <= endDate);
+            filteredLogs.sort((a, b) => {
+                const tA = a.markedAt?.toMillis ? a.markedAt.toMillis() : 0;
+                const tB = b.markedAt?.toMillis ? b.markedAt.toMillis() : 0;
+                return tA - tB; // Chronological
+            });
+
+            filteredLogs.forEach(log => {
+                const emp = personnelMap[log.empId] || {};
+                const isConsumed = log.mealRedeemed === true;
+                const cost = isConsumed ? mealTokenValue : 0;
+                
+                const dept = emp.department || emp.dept || '';
+                const acct = emp.accountName || 'CTE';
+                const comp = emp.companyName || '';
+                const site = emp.site || '';
+
+                // Grouping Filter Logic
+                if (filterType === 'DEPT' && !dept) return; 
+                if (filterType === 'ACCT' && !acct) return;
+                if (filterType === 'COMP' && !comp) return;
+                if (filterType === 'SITE' && !site) return;
+                if (filterType === 'CONSUMED_ONLY' && !isConsumed) return;
+                
+                let groupVal = '';
+                if(filterType === 'DEPT') groupVal = dept;
+                else if(filterType === 'ACCT') groupVal = acct;
+                else if(filterType === 'COMP') groupVal = comp;
+                else if(filterType === 'SITE') groupVal = site;
+
+                const timeStr = log.markedAt?.toDate ? log.markedAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+                const statusStr = isConsumed ? 'REDEEMED' : 'CLEARED';
+
+                rows += `
+                    <tr>
+                        <td>${log.date} ${timeStr}</td>
+                        <td>${emp.name || 'Unknown'}</td>
+                        <td>${log.empId}</td>
+                        <td>${dept}</td>
+                        <td>${site || '-'}</td>
+                        <td>${statusStr}</td>
+                        ${filterType !== 'ALL' && filterType !== 'CONSUMED_ONLY' ? `<td style="font-weight:bold; color:#4f46e5;">${groupVal || '-'}</td>` : ''}
+                        <td style="text-align:right">${formatter.format(cost)}</td>
+                    </tr>
+                `;
+                totalCost += cost;
+                count++;
+            });
+
+            if(count === 0) {
+                content.innerHTML = '<div style="text-align:center; padding: 40px; color: #64748b; font-weight: bold;">No records found for the selected criteria.</div>';
+                return;
+            }
+
+            const extraHeader = (filterType !== 'ALL' && filterType !== 'CONSUMED_ONLY') ? `<th>${filterType}</th>` : '';
+            const colSpanCount = (filterType !== 'ALL' && filterType !== 'CONSUMED_ONLY') ? 7 : 6;
+
+            content.innerHTML = `
+                <div class="print-mode-report">
+                    <div style="border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end;">
+                        <div>
+                            <h1 style="font-size: 24px; font-weight: bold; margin: 0; text-transform: uppercase;">Enterprise Audit Report</h1>
+                            <div style="font-size: 14px; margin-top: 5px; color: #475569;">Filter Applied: ${filterType} | Period: ${startDate} to ${endDate}</div>
+                        </div>
+                        <div style="text-align: right; font-size: 12px; color: #475569;">
+                            <div>Generated: ${new Date().toLocaleString()}</div>
+                            <div>System Node: ${loggedInSysUser?.username || 'SYSTEM'}</div>
+                        </div>
+                    </div>
+                    
+                    <table class="report-table">
+                        <thead>
+                            <tr>
+                                <th>Date/Time</th>
+                                <th>Employee Name</th>
+                                <th>Terminal ID</th>
+                                <th>Department</th>
+                                <th>Site</th>
+                                <th>Status</th>
+                                ${extraHeader}
+                                <th style="text-align:right">Cost Liability</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                        <tfoot>
+                            <tr style="background-color: #f8fafc;">
+                                <td colspan="${colSpanCount}" style="text-align:right; padding: 12px; font-weight: bold;">TOTAL EXPENDITURE:</td>
+                                <td style="text-align:right; padding: 12px; font-weight: bold; font-size: 1.1em;">${formatter.format(totalCost)}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    
+                    <div style="margin-top: 40px; font-size: 11px; text-align: center; color: #94a3b8; border-top: 1px dashed #cbd5e1; padding-top: 15px;">
+                        *** CONFIDENTIAL ENTERPRISE SYSTEM RECORD ***
+                    </div>
+                </div>
+            `;
+        };
+
+        window.generateCSV = () => {
+            const startDate = document.getElementById('rpt-start').value;
+            const endDate = document.getElementById('rpt-end').value;
+            const filterType = document.getElementById('rpt-filter-type').value; 
+
+            if(!startDate || !endDate) return window.showToast('Select date range', 'error');
+
+            const btn = document.getElementById('rpt-gen-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Extracting...';
+            btn.disabled = true;
+
+            try {
+                let csvHeaders = "Date,Time,Emp Name,Emp ID,Department,Site,Account,Company,Status,Cost Applied,Cleared By,Redeemed By\r\n";
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF" + csvHeaders;
+                let count = 0;
+
+                const filteredLogs = attendanceLogs.filter(log => log.date >= startDate && log.date <= endDate);
+
+                filteredLogs.forEach(log => {
+                    const emp = personnelMap[log.empId] || {};
+                    const isConsumed = log.mealRedeemed === true;
+                    
+                    if (filterType === 'CONSUMED_ONLY' && !isConsumed) return;
+
+                    const cost = isConsumed ? mealTokenValue : 0;
+                    const timeStr = log.markedAt?.toDate ? log.markedAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '';
+                    const statusStr = isConsumed ? 'REDEEMED' : 'CLEARED';
+
+                    const row = [
+                        `"${log.date}"`, 
+                        `"${timeStr}"`, 
+                        `"${emp.name || ''}"`, 
+                        `"${log.empId}"`,
+                        `"${emp.department || emp.dept || ''}"`, 
+                        `"${emp.site || ''}"`, 
+                        `"${emp.accountName || 'CTE'}"`, 
+                        `"${emp.companyName || ''}"`, 
+                        `"${statusStr}"`, 
+                        cost, 
+                        `"${log.markedBy || ''}"`, 
+                        `"${log.redeemedBy || ''}"`
+                    ];
+
+                    csvContent += row.join(",") + "\r\n";
+                    count++;
+                });
+
+                if (count === 0) {
+                    window.showToast('No records found for extraction.', 'error');
+                } else {
+                    const encodedUri = encodeURI(csvContent);
+                    const link = document.createElement("a");
+                    link.setAttribute("href", encodedUri);
+                    link.setAttribute("download", `Enterprise_Analytics_${filterType}_${startDate}_to_${endDate}.csv`);
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    window.showToast(`Data Exported (${count} rows)`, 'success');
+                }
+            } catch(e) { 
+                console.error("CSV Error:", e); 
+                window.showToast('Data extraction failed', 'error'); 
+            } finally { 
+                btn.innerHTML = originalText; 
+                btn.disabled = false; 
+            }
+        };
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <!-- PRINT OVERLAY -->
+    <div id="print-overlay"></div>
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-purple-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(147,51,234,0.4)]">
+                    <i class="fas fa-chart-pie text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Enterprise<span class="text-purple-400">Analytics</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-purple-400 tracking-wider">
+                    <i class="fas fa-server mr-1 align-middle"></i> TELEMETRY LIVE
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-purple-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-purple-600 shadow-[0_0_30px_rgba(147,51,234,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Processing Analytics...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN REPORTING VIEW -->
+        <div id="view-report" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col space-y-8">
+            
+            <!-- MONTHLY KPIs -->
+            <div>
+                <h3 class="font-extrabold text-slate-800 dark:text-white tracking-tight text-xl mb-4 border-b border-slate-200 dark:border-slate-700/50 pb-2">Fiscal Month Overview</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 relative overflow-hidden group">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Accumulated Cost Liability</div>
+                        <div id="rpt-month-spend" class="text-3xl font-black text-slate-800 dark:text-white tracking-tight">$0.00</div>
+                        <i class="fas fa-coins text-indigo-100 dark:text-indigo-900/40 text-5xl absolute right-4 bottom-4 pointer-events-none group-hover:scale-110 transition-transform"></i>
+                    </div>
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 relative overflow-hidden group">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
+                        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Clearances Issued</div>
+                        <div id="rpt-month-issued" class="text-3xl font-black text-slate-800 dark:text-white tracking-tight">0</div>
+                        <i class="fas fa-ticket-alt text-purple-100 dark:text-purple-900/40 text-5xl absolute right-4 bottom-4 pointer-events-none group-hover:scale-110 transition-transform"></i>
+                    </div>
+                    <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 relative overflow-hidden group">
+                        <div class="absolute top-0 left-0 w-1 h-full bg-teal-500"></div>
+                        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Meals Consumed / Redeemed</div>
+                        <div id="rpt-month-consumed" class="text-3xl font-black text-slate-800 dark:text-white tracking-tight">0</div>
+                        <i class="fas fa-check-double text-teal-100 dark:text-teal-900/40 text-5xl absolute right-4 bottom-4 pointer-events-none group-hover:scale-110 transition-transform"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DAILY KPIs -->
+            <div>
+                <h3 class="font-extrabold text-slate-800 dark:text-white tracking-tight text-xl mb-4 border-b border-slate-200 dark:border-slate-700/50 pb-2">Today's Real-Time Metrics</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-2xl shadow-lg shadow-blue-500/20 text-white relative overflow-hidden">
+                        <div class="text-[10px] font-bold text-blue-200 uppercase tracking-widest mb-1">Today's Gross Cost</div>
+                        <div id="rpt-total-spend" class="text-3xl font-black tracking-tight">$0.00</div>
+                        <i class="fas fa-chart-line text-blue-400/30 text-6xl absolute -right-2 -bottom-2"></i>
+                    </div>
+                    <div class="bg-gradient-to-br from-orange-400 to-orange-500 p-6 rounded-2xl shadow-lg shadow-orange-500/20 text-white relative overflow-hidden">
+                        <div class="text-[10px] font-bold text-orange-200 uppercase tracking-widest mb-1">Active Entries (Today)</div>
+                        <div id="rpt-tokens-issued-today" class="text-3xl font-black tracking-tight">0</div>
+                        <i class="fas fa-door-open text-orange-300/30 text-6xl absolute -right-2 -bottom-2"></i>
+                    </div>
+                    <div class="bg-gradient-to-br from-emerald-500 to-emerald-600 p-6 rounded-2xl shadow-lg shadow-emerald-500/20 text-white relative overflow-hidden">
+                        <div class="text-[10px] font-bold text-emerald-200 uppercase tracking-widest mb-1">Cleared Meals (Today)</div>
+                        <div id="rpt-tokens-consumed-today" class="text-3xl font-black tracking-tight">0</div>
+                        <i class="fas fa-utensils text-emerald-400/30 text-6xl absolute -right-2 -bottom-2"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CHARTS & DISTRIBUTIONS -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 7-Day Trend (Full Width) -->
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8 col-span-1 lg:col-span-2">
+                    <h4 class="font-bold text-slate-800 dark:text-white mb-8 border-b border-slate-100 dark:border-slate-700/50 pb-2 flex items-center"><i class="fas fa-chart-bar text-slate-400 mr-2"></i> 7-Day Financial Velocity Trend</h4>
+                    <div id="rpt-chart-trend" class="flex items-end justify-between h-48 space-x-3"></div>
+                </div>
+                
+                <!-- Demographics -->
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8">
+                    <h4 class="font-bold text-slate-800 dark:text-white mb-6 border-b border-slate-100 dark:border-slate-700/50 pb-2">Cost Distribution by Site / Facility</h4>
+                    <div id="rpt-chart-site" class="space-y-4 max-h-48 overflow-y-auto pr-2"></div>
+                </div>
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8">
+                    <h4 class="font-bold text-slate-800 dark:text-white mb-6 border-b border-slate-100 dark:border-slate-700/50 pb-2">Cost Distribution by Department</h4>
+                    <div id="rpt-chart-dept" class="space-y-4 max-h-48 overflow-y-auto pr-2"></div>
+                </div>
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8">
+                    <h4 class="font-bold text-slate-800 dark:text-white mb-6 border-b border-slate-100 dark:border-slate-700/50 pb-2">Cost Distribution by Company</h4>
+                    <div id="rpt-chart-comp" class="space-y-4 max-h-48 overflow-y-auto pr-2"></div>
+                </div>
+                <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8">
+                    <h4 class="font-bold text-slate-800 dark:text-white mb-6 border-b border-slate-100 dark:border-slate-700/50 pb-2">Cost Distribution by Account / Cost Center</h4>
+                    <div id="rpt-chart-acct" class="space-y-4 max-h-48 overflow-y-auto pr-2"></div>
+                </div>
+            </div>
+
+            <!-- LIVE TRANSACTION FEED -->
+            <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                <div class="px-6 py-5 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 font-bold text-slate-800 dark:text-white flex items-center justify-between">
+                    <div class="flex items-center"><i class="fas fa-list-ul text-slate-400 mr-3"></i> System Transaction Feed (Today's Live Ledger)</div>
+                </div>
+                <div class="max-h-80 overflow-y-auto hide-scroll">
+                    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700/50">
+                        <thead class="bg-white dark:bg-slate-800 sticky top-0 shadow-sm z-10">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Personnel Profile</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Time</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Department</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Site</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Status</th>
+                                <th class="px-6 py-4 text-right text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Cost Applied</th>
+                            </tr>
+                        </thead>
+                        <tbody id="report-table-body" class="bg-slate-50 dark:bg-slate-900/50 divide-y divide-slate-200 dark:divide-slate-700/50"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- DATA INTELLIGENCE CENTER (EXPORTS) -->
+            <div class="bg-gradient-to-r from-slate-900 to-slate-800 dark:from-slate-950 dark:to-slate-900 rounded-2xl shadow-xl border border-slate-700 dark:border-slate-800 p-8 relative overflow-hidden group">
+                <!-- Abstract decorative bg -->
+                <div class="absolute right-0 top-0 w-96 h-full bg-purple-600/5 skew-x-12 transform origin-bottom pointer-events-none"></div>
+                <div class="absolute right-20 top-0 w-48 h-full bg-indigo-600/5 -skew-x-12 transform origin-top pointer-events-none"></div>
+                
+                <div class="flex items-center justify-between mb-8 relative z-10 border-b border-slate-700/50 pb-4">
+                    <div>
+                        <h3 class="font-black text-3xl text-white tracking-tight flex items-center gap-3">
+                            <div class="bg-purple-600 p-2 rounded-lg shadow-lg shadow-purple-500/20"><i class="fas fa-database text-white text-xl"></i></div>
+                            Data Intelligence Center
+                        </h3>
+                        <p class="text-slate-400 text-sm mt-1 ml-14 font-medium">Generate secure audit reports and extract system telemetry.</p>
+                    </div>
+                    <div class="hidden md:block">
+                        <span class="bg-slate-800 text-slate-400 text-[10px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-md border border-slate-700">Analytics Root</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 relative z-10">
+                    <div class="bg-slate-800/50 dark:bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-purple-500/50 transition-colors">
+                        <label class="flex items-center text-[11px] font-bold text-purple-400 mb-3 uppercase tracking-widest"><i class="far fa-calendar-alt mr-2"></i> Query Range Start</label>
+                        <input type="date" id="rpt-start" class="w-full bg-slate-900 border border-slate-700 text-white rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition shadow-inner font-mono">
+                    </div>
+                    
+                    <div class="bg-slate-800/50 dark:bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-purple-500/50 transition-colors">
+                        <label class="flex items-center text-[11px] font-bold text-purple-400 mb-3 uppercase tracking-widest"><i class="far fa-calendar-check mr-2"></i> Query Range End</label>
+                        <input type="date" id="rpt-end" class="w-full bg-slate-900 border border-slate-700 text-white rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition shadow-inner font-mono">
+                    </div>
+                    
+                    <div class="bg-slate-800/50 dark:bg-slate-900/50 p-6 rounded-xl border border-slate-700 hover:border-purple-500/50 transition-colors">
+                        <label class="flex items-center text-[11px] font-bold text-purple-400 mb-3 uppercase tracking-widest"><i class="fas fa-filter mr-2"></i> Data Matrix Filter</label>
+                        <div class="relative">
+                            <select id="rpt-filter-type" class="w-full bg-slate-900 border border-slate-700 text-white rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition shadow-inner appearance-none cursor-pointer font-medium">
+                                <option value="ALL">Raw Terminal Audit (All Actions)</option>
+                                <option value="CONSUMED_ONLY">Financial Ledger (Redeemed Only)</option>
+                                <option value="DEPT">Aggregate by Department</option>
+                                <option value="COMP">Aggregate by Organization</option>
+                                <option value="ACCT">Aggregate by Cost Center / Account</option>
+                                <option value="SITE">Aggregate by Facility / Site</option>
+                            </select>
+                            <div class="absolute right-4 top-3.5 text-slate-500 pointer-events-none"><i class="fas fa-chevron-down text-xs"></i></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 pt-6 border-t border-slate-700/50 flex flex-col sm:flex-row gap-4 justify-end relative z-10">
+                    <button onclick="generateReportPreview()" class="px-6 py-3.5 rounded-xl font-bold text-sm bg-slate-800 text-slate-300 border border-slate-600 hover:bg-slate-700 hover:text-white transition flex items-center justify-center shadow-lg"><i class="fas fa-eye mr-2"></i> Crystal Preview</button>
+                    <button onclick="generateCSV()" id="rpt-gen-btn" class="px-8 py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border border-transparent shadow-lg shadow-purple-900/50 transition transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center"><i class="fas fa-cloud-download-alt mr-2"></i> Extract Secure CSV</button>
+                </div>
+            </div>
+            
+        </div>
+    </main>
+
+    <!-- REPORT PREVIEW MODAL -->
+    <div id="report-preview-modal" class="fixed inset-0 bg-slate-900/90 hidden z-50 flex flex-col items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-5xl h-[90vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col relative animate-fade-in">
+            <div class="bg-slate-100 border-b border-slate-200 p-5 flex justify-between items-center">
+                <h3 class="font-bold text-slate-800 text-lg flex items-center"><i class="fas fa-print mr-3 text-purple-600"></i> Audit Report Preview</h3>
+                <div class="flex gap-3">
+                    <button onclick="printReport()" class="bg-purple-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-purple-700 shadow-md transition flex items-center"><i class="fas fa-print mr-2"></i> Print Document</button>
+                    <button onclick="document.getElementById('report-preview-modal').classList.add('hidden')" class="bg-slate-200 text-slate-700 px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-300 transition flex items-center"><i class="fas fa-times mr-2"></i> Close</button>
+                </div>
+            </div>
+            <div id="report-preview-content" class="flex-grow overflow-auto p-10 bg-white text-black hide-scroll">
+                <!-- Content injected here via JS -->
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
