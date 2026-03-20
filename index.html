@@ -87,17 +87,20 @@
         //     projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
         // };
 
-        let appConfig = { apiKey: "MOCK_API_KEY", authDomain: "mock-domain.firebaseapp.com", projectId: "mock-project" };
-        
-        if (typeof __firebase_config !== 'undefined') { 
-            try { appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config; } catch (e) {}
-        }
+        const appConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            appId: import.meta.env.VITE_FIREBASE_APP_ID
+        };
 
         const app = initializeApp(appConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'enterprise-dashboard-v1';
-
+        const appId = 'enterprise-dashboard-v1';
+        
         // --- State Variables ---
         let SYSTEM_USERS = {};
         let loggedInSysUser = null; 
